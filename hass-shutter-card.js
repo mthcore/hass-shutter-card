@@ -142,6 +142,14 @@ class ShutterCard extends HTMLElement {
 
       shutter.classList.remove('sc-unavailable');
 
+      const isMoving = movementState === 'opening' || movementState === 'closing';
+
+      // Clear pending feedback once HA confirms movement or reaches target
+      if (isMoving || movementState === 'open' || movementState === 'closed') {
+        delete this._pendingAction?.[cfg.entity];
+      }
+      const hasPending = this._pendingAction?.[cfg.entity];
+
       if (!this.isUpdating) {
         const visiblePosition = rawToVisiblePercent(currentPosition, cfg.invertPercentage, cfg.offsetClosedPercentage);
         let positionText = this._positionPercentToText(visiblePosition, cfg.invertPercentage, cfg.alwaysPercentage, hass);
@@ -155,9 +163,21 @@ class ShutterCard extends HTMLElement {
           }
         }
 
-        shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
-          pos.textContent = positionText;
-        });
+        // During movement or pending action: show live % with spinner
+        if (isMoving || hasPending) {
+          if (typeof currentPosition === 'number') {
+            positionText = currentPosition + ' %';
+          }
+          shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+            pos.innerHTML = '<span class="sc-spinner"></span> ' + positionText;
+          });
+          shutter.classList.add('sc-moving');
+        } else {
+          shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+            pos.textContent = positionText;
+          });
+          shutter.classList.remove('sc-moving');
+        }
 
         if (cfg.disableEndButtons && cfg.showButtons) {
           this._updateButtonStates(shutter, currentPosition, cfg.invertPercentage);
@@ -173,8 +193,9 @@ class ShutterCard extends HTMLElement {
           this._setPickerPosition(clampPosition(pixelPos), picker, slide);
         }
 
-        // Update movement overlay
-        this._setMovement(movementState, shutter);
+        // Update movement overlay (also show immediately for pending actions)
+        const effectiveMovement = isMoving ? movementState : (hasPending ? hasPending : movementState);
+        this._setMovement(effectiveMovement, shutter);
       }
 
       // Update ARIA attributes on picker
@@ -320,6 +341,22 @@ class ShutterCard extends HTMLElement {
         const finalPos = clampPosition(initialPickerTop + delta);
         const percent = pixelToRawPercent(finalPos, cfg.invertPercentage, cfg.offsetClosedPercentage);
 
+        // Immediate feedback: guess direction from current position
+        const state = hass.states[cfg.entity];
+        if (state && typeof state.attributes.current_position === 'number') {
+          const currentPos = state.attributes.current_position;
+          if (percent !== currentPos) {
+            const direction = percent > currentPos ? (cfg.invertPercentage ? 'closing' : 'opening') : (cfg.invertPercentage ? 'opening' : 'closing');
+            if (!this._pendingAction) this._pendingAction = {};
+            this._pendingAction[cfg.entity] = direction;
+            this._setMovement(direction, shutter);
+            shutter.classList.add('sc-moving');
+            shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+              pos.innerHTML = '<span class="sc-spinner"></span> ' + percent + ' %';
+            });
+          }
+        }
+
         this._callService(hass, 'set_cover_position', cfg.entity, { position: percent });
       };
 
@@ -355,6 +392,12 @@ class ShutterCard extends HTMLElement {
         }
         event.preventDefault();
         if (newPos !== null) {
+          // Immediate feedback for keyboard
+          const direction = newPos > current ? (cfg.invertPercentage ? 'closing' : 'opening') : (cfg.invertPercentage ? 'opening' : 'closing');
+          if (!this._pendingAction) this._pendingAction = {};
+          this._pendingAction[cfg.entity] = direction;
+          this._setMovement(direction, shutter);
+
           this._callService(hass, 'set_cover_position', cfg.entity, { position: newPos });
         }
       });
@@ -375,6 +418,26 @@ class ShutterCard extends HTMLElement {
           if (!service) return;
 
           const args = command === 'partial' ? { position: Number(button.dataset.position) } : {};
+
+          // Immediate feedback: show arrow and spinner right away
+          const directionMap = { up: 'opening', down: 'closing', partial: 'closing', 'tilt-open': 'opening', 'tilt-close': 'closing' };
+          const direction = directionMap[command];
+          if (direction) {
+            if (!this._pendingAction) this._pendingAction = {};
+            this._pendingAction[cfg.entity] = direction;
+            this._setMovement(direction, shutter);
+            shutter.classList.add('sc-moving');
+            shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+              const currentText = pos.textContent;
+              pos.innerHTML = '<span class="sc-spinner"></span> ' + currentText;
+            });
+          }
+          if (command === 'stop') {
+            delete this._pendingAction?.[cfg.entity];
+            this._setMovement('stopped', shutter);
+            shutter.classList.remove('sc-moving');
+          }
+
           this._callService(hass, service, cfg.entity, args);
         });
       });
@@ -437,6 +500,26 @@ class ShutterCard extends HTMLElement {
         border-radius: 2px; background-color: var(--secondary-background-color);
         color: var(--primary-text-color); text-align: center; font-size: 12px;
         pointer-events: none;
+      }
+      @keyframes sc-spin {
+        to { transform: rotate(360deg); }
+      }
+      .sc-spinner {
+        display: inline-block; width: 12px; height: 12px;
+        border: 2px solid var(--primary-text-color, #333);
+        border-top-color: transparent;
+        border-radius: 50%;
+        animation: sc-spin 0.8s linear infinite;
+        vertical-align: middle;
+        margin-right: 4px;
+      }
+      .sc-shutter.sc-moving .sc-shutter-position {
+        background-color: var(--primary-color, #03a9f4);
+        color: var(--text-primary-color, #fff);
+      }
+      .sc-shutter.sc-moving .sc-spinner {
+        border-color: var(--text-primary-color, #fff);
+        border-top-color: transparent;
       }
     `;
 
