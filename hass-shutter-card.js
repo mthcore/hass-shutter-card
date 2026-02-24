@@ -144,51 +144,65 @@ class ShutterCard extends HTMLElement {
 
       const isMoving = movementState === 'opening' || movementState === 'closing';
 
-      // Clear pending feedback only when HA confirms actual movement
-      if (isMoving) {
-        delete this._pendingAction?.[cfg.entity];
-        if (this._pendingTimeout?.[cfg.entity]) {
-          clearTimeout(this._pendingTimeout[cfg.entity]);
-          delete this._pendingTimeout[cfg.entity];
+      // Pending action: track HA confirmation and clear when target reached
+      const hasPending = this._pendingAction?.[cfg.entity];
+      if (hasPending) {
+        if (isMoving) hasPending.confirmed = true;
+
+        const reached = typeof hasPending.targetPercent === 'number'
+          && typeof currentPosition === 'number'
+          && (hasPending.direction === 'closing'
+            ? currentPosition <= hasPending.targetPercent
+            : currentPosition >= hasPending.targetPercent);
+
+        if (hasPending.confirmed && (reached || !isMoving)) {
+          delete this._pendingAction[cfg.entity];
+          if (this._pendingTimeout?.[cfg.entity]) {
+            clearTimeout(this._pendingTimeout[cfg.entity]);
+            delete this._pendingTimeout[cfg.entity];
+          }
         }
       }
-      const hasPending = this._pendingAction?.[cfg.entity];
+      const stillPending = this._pendingAction?.[cfg.entity];
 
       if (!this.isUpdating) {
-        if (hasPending && !isMoving) {
-          // OPTIMISTIC STATE: HA hasn't confirmed movement yet.
-          // Preserve the UI state set by the action handler (slider, badge, overlay).
+        if (stillPending) {
+          // OPTIMISTIC STATE: preserve UI set by the action handler
           shutter.classList.add('sc-moving');
-          this._setMovement(hasPending, shutter);
+          this._setMovement(stillPending.direction, shutter);
         } else {
-          // NORMAL: either idle or HA confirmed movement (live updates)
-          const visiblePosition = rawToVisiblePercent(currentPosition, cfg.invertPercentage, cfg.offsetClosedPercentage);
-          let positionText = this._positionPercentToText(visiblePosition, cfg.invertPercentage, cfg.alwaysPercentage, hass);
-
-          // Show extra detail when at end position with offset
-          if (cfg.offsetClosedPercentage) {
-            const atEnd = cfg.invertPercentage ? visiblePosition === 100 : visiblePosition === 0;
-            if (atEnd) {
-              const detail = 100 - Math.round(Math.abs(currentPosition - visiblePosition) / cfg.offsetClosedPercentage * 100);
-              positionText += ' (' + detail + ' %)';
-            }
-          }
-
+          // NORMAL: idle or live HA updates
           if (isMoving) {
-            // HA is actively moving - show live position with spinner
             if (typeof currentPosition === 'number') {
-              positionText = currentPosition + ' %';
+              shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+                pos.innerHTML = '<span class="sc-spinner"></span> ' + currentPosition + ' %';
+              });
             }
-            shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
-              pos.innerHTML = '<span class="sc-spinner"></span> ' + positionText;
-            });
             shutter.classList.add('sc-moving');
+            this._setMovement(movementState, shutter);
           } else {
-            // Idle state
-            shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
-              pos.textContent = positionText;
-            });
+            // Idle - only update if position is valid (avoids flash to "0%")
+            if (typeof currentPosition === 'number') {
+              const visiblePosition = rawToVisiblePercent(currentPosition, cfg.invertPercentage, cfg.offsetClosedPercentage);
+              let positionText = this._positionPercentToText(visiblePosition, cfg.invertPercentage, cfg.alwaysPercentage, hass);
+
+              if (cfg.offsetClosedPercentage) {
+                const atEnd = cfg.invertPercentage ? visiblePosition === 100 : visiblePosition === 0;
+                if (atEnd) {
+                  const detail = 100 - Math.round(Math.abs(currentPosition - visiblePosition) / cfg.offsetClosedPercentage * 100);
+                  positionText += ' (' + detail + ' %)';
+                }
+              }
+
+              shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+                pos.textContent = positionText;
+              });
+
+              const pixelPos = percentToPixelPosition(currentPosition, cfg.invertPercentage, cfg.offsetClosedPercentage);
+              this._setPickerPosition(clampPosition(pixelPos), picker, slide);
+            }
             shutter.classList.remove('sc-moving');
+            this._setMovement('stopped', shutter);
           }
 
           if (cfg.disableEndButtons && cfg.showButtons) {
@@ -198,14 +212,6 @@ class ShutterCard extends HTMLElement {
           if (floatingPosition && typeof currentPosition === 'number') {
             floatingPosition.textContent = currentPosition + '%';
           }
-
-          // Update slider position
-          if (typeof currentPosition === 'number') {
-            const pixelPos = percentToPixelPosition(currentPosition, cfg.invertPercentage, cfg.offsetClosedPercentage);
-            this._setPickerPosition(clampPosition(pixelPos), picker, slide);
-          }
-
-          this._setMovement(isMoving ? movementState : 'stopped', shutter);
         }
       }
 
@@ -372,7 +378,7 @@ class ShutterCard extends HTMLElement {
           const currentPos = state.attributes.current_position;
           if (percent !== currentPos) {
             const direction = percent > currentPos ? (cfg.invertPercentage ? 'closing' : 'opening') : (cfg.invertPercentage ? 'opening' : 'closing');
-            this._setPendingAction(cfg.entity, direction);
+            this._setPendingAction(cfg.entity, direction, percent);
             this._setMovement(direction, shutter);
             shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
               pos.innerHTML = '<span class="sc-spinner"></span> ' + percent + ' %';
@@ -421,7 +427,7 @@ class ShutterCard extends HTMLElement {
         if (newPos !== null) {
           // Immediate feedback for keyboard
           const direction = newPos > current ? (cfg.invertPercentage ? 'closing' : 'opening') : (cfg.invertPercentage ? 'opening' : 'closing');
-          this._setPendingAction(cfg.entity, direction);
+          this._setPendingAction(cfg.entity, direction, newPos);
           this._setMovement(direction, shutter);
           shutter.classList.add('sc-moving');
           shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
@@ -455,7 +461,8 @@ class ShutterCard extends HTMLElement {
           const directionMap = { up: 'opening', down: 'closing', partial: 'closing', 'tilt-open': 'opening', 'tilt-close': 'closing' };
           const direction = directionMap[command];
           if (direction) {
-            this._setPendingAction(cfg.entity, direction);
+            const target = command === 'partial' ? Number(button.dataset.position) : undefined;
+            this._setPendingAction(cfg.entity, direction, target);
             this._setMovement(direction, shutter);
             shutter.classList.add('sc-moving');
             shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
@@ -606,13 +613,13 @@ class ShutterCard extends HTMLElement {
     slide.style.height = (clamped - SLIDER_MIN_PX) + 'px';
   }
 
-  _setPendingAction(entityId, direction) {
+  _setPendingAction(entityId, direction, targetPercent) {
     if (!this._pendingAction) this._pendingAction = {};
     if (!this._pendingTimeout) this._pendingTimeout = {};
     if (this._pendingTimeout[entityId]) {
       clearTimeout(this._pendingTimeout[entityId]);
     }
-    this._pendingAction[entityId] = direction;
+    this._pendingAction[entityId] = { direction, targetPercent, confirmed: false };
     // Safety timeout: clear pending if HA never confirms movement (e.g. already at target)
     this._pendingTimeout[entityId] = setTimeout(() => {
       delete this._pendingAction?.[entityId];
