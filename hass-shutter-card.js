@@ -101,6 +101,7 @@ window.customCards.push({
 
 class ShutterCard extends HTMLElement {
   set hass(hass) {
+    this._hass = hass; // Keep a fresh reference for event handlers
     const entities = this._entities;
 
     // Init the card (first render only)
@@ -372,8 +373,8 @@ class ShutterCard extends HTMLElement {
         const finalPos = clampPosition(initialPickerTop + delta);
         const percent = pixelToRawPercent(finalPos, cfg.invertPercentage, cfg.offsetClosedPercentage);
 
-        // Immediate feedback: guess direction from current position
-        const state = hass.states[cfg.entity];
+        // Immediate feedback: guess direction from FRESH hass state
+        const state = this._hass.states[cfg.entity];
         if (state && typeof state.attributes.current_position === 'number') {
           const currentPos = state.attributes.current_position;
           if (percent !== currentPos) {
@@ -390,7 +391,7 @@ class ShutterCard extends HTMLElement {
           shutter.classList.remove('sc-moving');
         }
 
-        this._callService(hass, 'set_cover_position', cfg.entity, { position: percent });
+        this._callService(this._hass, 'set_cover_position', cfg.entity, { position: percent });
       };
 
       // Attach pointer events on picture area (larger hit target)
@@ -398,7 +399,7 @@ class ShutterCard extends HTMLElement {
 
       // Keyboard support for slider
       picker.addEventListener('keydown', (event) => {
-        const state = hass.states[cfg.entity];
+        const state = this._hass.states[cfg.entity];
         if (!state || typeof state.attributes.current_position !== 'number') return;
 
         const current = state.attributes.current_position;
@@ -436,7 +437,7 @@ class ShutterCard extends HTMLElement {
           const pixelPos = percentToPixelPosition(newPos, cfg.invertPercentage, cfg.offsetClosedPercentage);
           this._setPickerPosition(clampPosition(pixelPos), picker, slide);
 
-          this._callService(hass, 'set_cover_position', cfg.entity, { position: newPos });
+          this._callService(this._hass, 'set_cover_position', cfg.entity, { position: newPos });
         }
       });
 
@@ -480,7 +481,7 @@ class ShutterCard extends HTMLElement {
             shutter.classList.remove('sc-moving');
           }
 
-          this._callService(hass, service, cfg.entity, args);
+          this._callService(this._hass, service, cfg.entity, args);
         });
       });
 
