@@ -144,9 +144,13 @@ class ShutterCard extends HTMLElement {
 
       const isMoving = movementState === 'opening' || movementState === 'closing';
 
-      // Clear pending feedback once HA confirms movement or reaches target
-      if (isMoving || movementState === 'open' || movementState === 'closed') {
+      // Clear pending feedback only when HA confirms actual movement
+      if (isMoving) {
         delete this._pendingAction?.[cfg.entity];
+        if (this._pendingTimeout?.[cfg.entity]) {
+          clearTimeout(this._pendingTimeout[cfg.entity]);
+          delete this._pendingTimeout[cfg.entity];
+        }
       }
       const hasPending = this._pendingAction?.[cfg.entity];
 
@@ -310,8 +314,15 @@ class ShutterCard extends HTMLElement {
         initialPointerY = event.pageY;
         initialPickerTop = parseInt(picker.style.top) || SLIDER_MIN_PX;
 
+        shutter.classList.add('sc-dragging', 'sc-moving');
         document.addEventListener('pointermove', onPointerMove);
         document.addEventListener('pointerup', onPointerUp);
+
+        // Show live % on badge immediately
+        const rawPercent = pixelToRawPercent(initialPickerTop, cfg.invertPercentage, cfg.offsetClosedPercentage);
+        shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+          pos.textContent = rawPercent + ' %';
+        });
 
         if (cfg.showSlidePercentage && floatingPosition) {
           floatingPosition.style.display = 'block';
@@ -323,13 +334,20 @@ class ShutterCard extends HTMLElement {
         const newPos = clampPosition(initialPickerTop + delta);
         this._setPickerPosition(newPos, picker, slide);
 
+        const rawPercent = pixelToRawPercent(newPos, cfg.invertPercentage, cfg.offsetClosedPercentage);
+        // Update position badge live
+        shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+          pos.textContent = rawPercent + ' %';
+        });
+
         if (cfg.showSlidePercentage && floatingPosition) {
-          floatingPosition.textContent = pixelToRawPercent(newPos, cfg.invertPercentage, cfg.offsetClosedPercentage) + '%';
+          floatingPosition.textContent = rawPercent + '%';
         }
       };
 
       const onPointerUp = (event) => {
         this.isUpdating = false;
+        shutter.classList.remove('sc-dragging');
         document.removeEventListener('pointermove', onPointerMove);
         document.removeEventListener('pointerup', onPointerUp);
 
@@ -347,14 +365,16 @@ class ShutterCard extends HTMLElement {
           const currentPos = state.attributes.current_position;
           if (percent !== currentPos) {
             const direction = percent > currentPos ? (cfg.invertPercentage ? 'closing' : 'opening') : (cfg.invertPercentage ? 'opening' : 'closing');
-            if (!this._pendingAction) this._pendingAction = {};
-            this._pendingAction[cfg.entity] = direction;
+            this._setPendingAction(cfg.entity, direction);
             this._setMovement(direction, shutter);
-            shutter.classList.add('sc-moving');
             shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
               pos.innerHTML = '<span class="sc-spinner"></span> ' + percent + ' %';
             });
+          } else {
+            shutter.classList.remove('sc-moving');
           }
+        } else {
+          shutter.classList.remove('sc-moving');
         }
 
         this._callService(hass, 'set_cover_position', cfg.entity, { position: percent });
@@ -394,9 +414,9 @@ class ShutterCard extends HTMLElement {
         if (newPos !== null) {
           // Immediate feedback for keyboard
           const direction = newPos > current ? (cfg.invertPercentage ? 'closing' : 'opening') : (cfg.invertPercentage ? 'opening' : 'closing');
-          if (!this._pendingAction) this._pendingAction = {};
-          this._pendingAction[cfg.entity] = direction;
+          this._setPendingAction(cfg.entity, direction);
           this._setMovement(direction, shutter);
+          shutter.classList.add('sc-moving');
 
           this._callService(hass, 'set_cover_position', cfg.entity, { position: newPos });
         }
@@ -423,8 +443,7 @@ class ShutterCard extends HTMLElement {
           const directionMap = { up: 'opening', down: 'closing', partial: 'closing', 'tilt-open': 'opening', 'tilt-close': 'closing' };
           const direction = directionMap[command];
           if (direction) {
-            if (!this._pendingAction) this._pendingAction = {};
-            this._pendingAction[cfg.entity] = direction;
+            this._setPendingAction(cfg.entity, direction);
             this._setMovement(direction, shutter);
             shutter.classList.add('sc-moving');
             shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
@@ -434,6 +453,10 @@ class ShutterCard extends HTMLElement {
           }
           if (command === 'stop') {
             delete this._pendingAction?.[cfg.entity];
+            if (this._pendingTimeout?.[cfg.entity]) {
+              clearTimeout(this._pendingTimeout[cfg.entity]);
+              delete this._pendingTimeout[cfg.entity];
+            }
             this._setMovement('stopped', shutter);
             shutter.classList.remove('sc-moving');
           }
@@ -464,14 +487,18 @@ class ShutterCard extends HTMLElement {
       }
       .sc-shutter-selector-slide {
         position: absolute; top: ${SLIDER_MIN_PX}px; left: 6%; width: 88%; height: 0;
+        transition: height 0.3s ease;
         background-image: url(data:@file/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAGCAYAAAACEPQxAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAIGNIUk0AAHpPAACA1wAA+5gAAH6BAAB41AAA6bgAADhTAAAa8BY+DIIAAAAoSURBVHjaYjh48OBqpt+/f3sx8fHxcTFJSkoyMHFycjIwcXJyHgYMAKRuB6wLmIXlAAAAAElFTkSuQmCC);
       }
       .sc-shutter-selector-picker {
         position: absolute; top: ${SLIDER_MIN_PX}px; left: 6%; width: 88%;
         cursor: pointer; height: 20px; background-repeat: no-repeat;
+        transition: top 0.3s ease;
         touch-action: none;
         background-image: url(data:@file/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIkAAAAHCAYAAAA8nm5hAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAIGNIUk0AAHpPAACA1wAA+5gAAH6BAAB41AAA6bgAADhTAAAa8BY+DIIAAAG4SURBVHja7JYxstowEIZ/rWTJNuPODZyAjipFCq6Qw+RyHILuVXTMQGMzYxwDwpawrVT2MEkeL34UITP+GzXaWUnfr91lm83m+2w2+6qUgnMOQ9W2LYioX0e9rpxzYIzBOQfn3ENeRITD4aCLongTxpgvVVV9q+t6kEkYYwAAzjk8z0NVVf1BRr2eOl5dMTDGPNxLRDDG/DDGKKG1llpr2blqCGTOOeI4BuccdV3jer2ONF64ioRhiCiKYK1FVVWw1vbm+RPbsiyDsiylUEq1vu9jqEkYY7jdbrhcLphMJmCMQSn1btJR/17WWmit++ovhHiXNxFBStlIKVsRBAEFQQDO+aCEnHPsdjusVissFgvM53P4vj+SeFEREdbrNbbbLZbLJabTKdq2fbjfGMOttSTyPLee5xnOeT/Y/G0l2e/3iKIIYRgiy7J+ILrvgaOeaxG/zhSfiWeMoa5rZFmGOI4BAGmaPuwaRISiKMrT6WRFkiRra63oTDLEmWmaAgDyPMfxePztUv/DEHv/+B9BeRbaMyYZkvc+rvv4TdMgz3PEcYwkSdA0zYd8z+ez1lq//QQAAP//AwAV5u5HIxEL5wAAAABJRU5ErkJggg==);
       }
+      .sc-dragging .sc-shutter-selector-slide,
+      .sc-dragging .sc-shutter-selector-picker { transition: none !important; }
       .sc-shutter-selector-picker:focus-visible {
         outline: 2px solid var(--primary-color, #03a9f4);
         outline-offset: 2px;
@@ -493,6 +520,7 @@ class ShutterCard extends HTMLElement {
         display: inline-block; vertical-align: middle; padding: 0 6px; margin-left: 1rem;
         border-radius: 2px; background-color: var(--secondary-background-color);
         color: var(--primary-text-color);
+        transition: background-color 0.3s ease, color 0.3s ease;
       }
       .sc-shutter-floating-position {
         display: none; position: absolute; width: 4ex;
@@ -564,6 +592,20 @@ class ShutterCard extends HTMLElement {
     const clamped = clampPosition(position);
     picker.style.top = clamped + 'px';
     slide.style.height = (clamped - SLIDER_MIN_PX) + 'px';
+  }
+
+  _setPendingAction(entityId, direction) {
+    if (!this._pendingAction) this._pendingAction = {};
+    if (!this._pendingTimeout) this._pendingTimeout = {};
+    if (this._pendingTimeout[entityId]) {
+      clearTimeout(this._pendingTimeout[entityId]);
+    }
+    this._pendingAction[entityId] = direction;
+    // Safety timeout: clear pending if HA never confirms movement (e.g. already at target)
+    this._pendingTimeout[entityId] = setTimeout(() => {
+      delete this._pendingAction?.[entityId];
+      delete this._pendingTimeout?.[entityId];
+    }, 10000);
   }
 
   _setMovement(movement, shutter) {
