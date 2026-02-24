@@ -111,12 +111,10 @@ class ShutterCard extends HTMLElement {
 
     // Update all shutters UI
     entities.forEach((cfg) => {
-      const shutter = this.card.querySelector('div[data-shutter="' + cfg.entity + '"]');
-      if (!shutter) return;
+      const el = this._elements?.[cfg.entity];
+      if (!el) return;
 
-      const slide = shutter.querySelector('.sc-shutter-selector-slide');
-      const picker = shutter.querySelector('.sc-shutter-selector-picker');
-      const floatingPosition = shutter.querySelector('.sc-shutter-floating-position');
+      const { shutter, slide, picker, floatingPosition, positionBadges, labels } = el;
 
       const state = hass.states[cfg.entity];
       const friendlyName = cfg.name || (state ? state.attributes.friendly_name : cfg.entity);
@@ -125,13 +123,13 @@ class ShutterCard extends HTMLElement {
       const isUnavailable = !state || state.state === 'unavailable' || state.state === 'unknown';
 
       // Update labels (textContent for XSS safety)
-      shutter.querySelectorAll('.sc-shutter-label').forEach((label) => {
+      labels.forEach((label) => {
         label.textContent = friendlyName;
       });
 
       // Handle unavailable state
       if (isUnavailable) {
-        shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+        positionBadges.forEach((pos) => {
           pos.textContent = state ? state.state : 'unavailable';
         });
         shutter.classList.add('sc-unavailable');
@@ -175,7 +173,7 @@ class ShutterCard extends HTMLElement {
           // NORMAL: idle or live HA updates
           if (isMoving) {
             if (typeof currentPosition === 'number') {
-              shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+              positionBadges.forEach((pos) => {
                 pos.innerHTML = '<span class="sc-spinner"></span> ' + currentPosition + ' %';
               });
             }
@@ -195,7 +193,7 @@ class ShutterCard extends HTMLElement {
                 }
               }
 
-              shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+              positionBadges.forEach((pos) => {
                 pos.textContent = positionText;
               });
 
@@ -231,6 +229,8 @@ class ShutterCard extends HTMLElement {
     }
     this.card = card;
     this.appendChild(card);
+
+    this._elements = {};
 
     const allShutters = document.createElement('div');
     allShutters.className = 'sc-shutters';
@@ -309,9 +309,13 @@ class ShutterCard extends HTMLElement {
       const slide = shutter.querySelector('.sc-shutter-selector-slide');
       const picker = shutter.querySelector('.sc-shutter-selector-picker');
       const floatingPosition = shutter.querySelector('.sc-shutter-floating-position');
+      const positionBadges = shutter.querySelectorAll('.sc-shutter-position');
+      const labels = shutter.querySelectorAll('.sc-shutter-label');
+
+      this._elements[cfg.entity] = { shutter, slide, picker, floatingPosition, positionBadges, labels };
 
       // Click on label opens more-info dialog
-      shutter.querySelectorAll('.sc-shutter-label').forEach((labelDOM) => {
+      labels.forEach((labelDOM) => {
         labelDOM.addEventListener('click', () => {
           const e = new CustomEvent('hass-more-info', { composed: true, bubbles: true, detail: { entityId: cfg.entity } });
           this.dispatchEvent(e);
@@ -331,10 +335,11 @@ class ShutterCard extends HTMLElement {
         shutter.classList.add('sc-dragging', 'sc-moving');
         document.addEventListener('pointermove', onPointerMove);
         document.addEventListener('pointerup', onPointerUp);
+        document.addEventListener('pointercancel', onPointerUp);
 
         // Show live % on badge immediately
         const rawPercent = pixelToRawPercent(initialPickerTop, cfg.invertPercentage, cfg.offsetClosedPercentage);
-        shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+        positionBadges.forEach((pos) => {
           pos.textContent = rawPercent + ' %';
         });
 
@@ -350,7 +355,7 @@ class ShutterCard extends HTMLElement {
 
         const rawPercent = pixelToRawPercent(newPos, cfg.invertPercentage, cfg.offsetClosedPercentage);
         // Update position badge live
-        shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+        positionBadges.forEach((pos) => {
           pos.textContent = rawPercent + ' %';
         });
 
@@ -364,6 +369,7 @@ class ShutterCard extends HTMLElement {
         shutter.classList.remove('sc-dragging');
         document.removeEventListener('pointermove', onPointerMove);
         document.removeEventListener('pointerup', onPointerUp);
+        document.removeEventListener('pointercancel', onPointerUp);
 
         if (cfg.showSlidePercentage && floatingPosition) {
           floatingPosition.style.display = 'none';
@@ -381,7 +387,7 @@ class ShutterCard extends HTMLElement {
             const direction = percent > currentPos ? (cfg.invertPercentage ? 'closing' : 'opening') : (cfg.invertPercentage ? 'opening' : 'closing');
             this._setPendingAction(cfg.entity, direction, percent);
             this._setMovement(direction, shutter);
-            shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+            positionBadges.forEach((pos) => {
               pos.innerHTML = '<span class="sc-spinner"></span> ' + percent + ' %';
             });
           } else {
@@ -431,7 +437,7 @@ class ShutterCard extends HTMLElement {
           this._setPendingAction(cfg.entity, direction, newPos);
           this._setMovement(direction, shutter);
           shutter.classList.add('sc-moving');
-          shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+          positionBadges.forEach((pos) => {
             pos.innerHTML = '<span class="sc-spinner"></span> ' + newPos + ' %';
           });
           const pixelPos = percentToPixelPosition(newPos, cfg.invertPercentage, cfg.offsetClosedPercentage);
@@ -466,7 +472,7 @@ class ShutterCard extends HTMLElement {
             this._setPendingAction(cfg.entity, direction, target);
             this._setMovement(direction, shutter);
             shutter.classList.add('sc-moving');
-            shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+            positionBadges.forEach((pos) => {
               const currentText = pos.textContent;
               pos.innerHTML = '<span class="sc-spinner"></span> ' + currentText;
             });
@@ -575,10 +581,22 @@ class ShutterCard extends HTMLElement {
     this.appendChild(style);
   }
 
+  disconnectedCallback() {
+    if (this._pendingTimeout) {
+      Object.keys(this._pendingTimeout).forEach((id) => {
+        clearTimeout(this._pendingTimeout[id]);
+      });
+      this._pendingTimeout = {};
+    }
+    this._pendingAction = {};
+  }
+
   _callService(hass, service, entityId, args = {}) {
     hass.callService('cover', service, {
       entity_id: entityId,
       ...args,
+    }).catch((err) => {
+      console.error('shutter-card: service call failed:', service, entityId, err);
     });
   }
 
