@@ -155,51 +155,58 @@ class ShutterCard extends HTMLElement {
       const hasPending = this._pendingAction?.[cfg.entity];
 
       if (!this.isUpdating) {
-        const visiblePosition = rawToVisiblePercent(currentPosition, cfg.invertPercentage, cfg.offsetClosedPercentage);
-        let positionText = this._positionPercentToText(visiblePosition, cfg.invertPercentage, cfg.alwaysPercentage, hass);
-
-        // Show extra detail when at end position with offset
-        if (cfg.offsetClosedPercentage) {
-          const atEnd = cfg.invertPercentage ? visiblePosition === 100 : visiblePosition === 0;
-          if (atEnd) {
-            const detail = 100 - Math.round(Math.abs(currentPosition - visiblePosition) / cfg.offsetClosedPercentage * 100);
-            positionText += ' (' + detail + ' %)';
-          }
-        }
-
-        // During movement or pending action: show live % with spinner
-        if (isMoving || hasPending) {
-          if (typeof currentPosition === 'number') {
-            positionText = currentPosition + ' %';
-          }
-          shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
-            pos.innerHTML = '<span class="sc-spinner"></span> ' + positionText;
-          });
+        if (hasPending && !isMoving) {
+          // OPTIMISTIC STATE: HA hasn't confirmed movement yet.
+          // Preserve the UI state set by the action handler (slider, badge, overlay).
           shutter.classList.add('sc-moving');
+          this._setMovement(hasPending, shutter);
         } else {
-          shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
-            pos.textContent = positionText;
-          });
-          shutter.classList.remove('sc-moving');
-        }
+          // NORMAL: either idle or HA confirmed movement (live updates)
+          const visiblePosition = rawToVisiblePercent(currentPosition, cfg.invertPercentage, cfg.offsetClosedPercentage);
+          let positionText = this._positionPercentToText(visiblePosition, cfg.invertPercentage, cfg.alwaysPercentage, hass);
 
-        if (cfg.disableEndButtons && cfg.showButtons) {
-          this._updateButtonStates(shutter, currentPosition, cfg.invertPercentage);
-        }
+          // Show extra detail when at end position with offset
+          if (cfg.offsetClosedPercentage) {
+            const atEnd = cfg.invertPercentage ? visiblePosition === 100 : visiblePosition === 0;
+            if (atEnd) {
+              const detail = 100 - Math.round(Math.abs(currentPosition - visiblePosition) / cfg.offsetClosedPercentage * 100);
+              positionText += ' (' + detail + ' %)';
+            }
+          }
 
-        if (floatingPosition && typeof currentPosition === 'number') {
-          floatingPosition.textContent = currentPosition + '%';
-        }
+          if (isMoving) {
+            // HA is actively moving - show live position with spinner
+            if (typeof currentPosition === 'number') {
+              positionText = currentPosition + ' %';
+            }
+            shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+              pos.innerHTML = '<span class="sc-spinner"></span> ' + positionText;
+            });
+            shutter.classList.add('sc-moving');
+          } else {
+            // Idle state
+            shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+              pos.textContent = positionText;
+            });
+            shutter.classList.remove('sc-moving');
+          }
 
-        // Update slider position
-        if (typeof currentPosition === 'number') {
-          const pixelPos = percentToPixelPosition(currentPosition, cfg.invertPercentage, cfg.offsetClosedPercentage);
-          this._setPickerPosition(clampPosition(pixelPos), picker, slide);
-        }
+          if (cfg.disableEndButtons && cfg.showButtons) {
+            this._updateButtonStates(shutter, currentPosition, cfg.invertPercentage);
+          }
 
-        // Update movement overlay (also show immediately for pending actions)
-        const effectiveMovement = isMoving ? movementState : (hasPending ? hasPending : movementState);
-        this._setMovement(effectiveMovement, shutter);
+          if (floatingPosition && typeof currentPosition === 'number') {
+            floatingPosition.textContent = currentPosition + '%';
+          }
+
+          // Update slider position
+          if (typeof currentPosition === 'number') {
+            const pixelPos = percentToPixelPosition(currentPosition, cfg.invertPercentage, cfg.offsetClosedPercentage);
+            this._setPickerPosition(clampPosition(pixelPos), picker, slide);
+          }
+
+          this._setMovement(isMoving ? movementState : 'stopped', shutter);
+        }
       }
 
       // Update ARIA attributes on picker
@@ -417,6 +424,11 @@ class ShutterCard extends HTMLElement {
           this._setPendingAction(cfg.entity, direction);
           this._setMovement(direction, shutter);
           shutter.classList.add('sc-moving');
+          shutter.querySelectorAll('.sc-shutter-position').forEach((pos) => {
+            pos.innerHTML = '<span class="sc-spinner"></span> ' + newPos + ' %';
+          });
+          const pixelPos = percentToPixelPosition(newPos, cfg.invertPercentage, cfg.offsetClosedPercentage);
+          this._setPickerPosition(clampPosition(pixelPos), picker, slide);
 
           this._callService(hass, 'set_cover_position', cfg.entity, { position: newPos });
         }
